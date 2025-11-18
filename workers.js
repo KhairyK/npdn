@@ -1,4 +1,4 @@
-import { untar } from 'https://cdn.jsdelivr.net/npm/untar-js@latest/dist/untar.min.js';
+import { untar } from './node_modules/untar-js/dist/untar.min.js';
 
 export default {
   async fetch(request, env) {
