@@ -1,4 +1,5 @@
-import { untar } from './node_modules/untar-js/dist/untar.min.js';
+import { ungzip, strFromU8 } from './node_modules/fflate/esm/browser.js';
+import Tar from './node_modules/tar-js/tar.js';
 
 export default {
   async fetch(request, env) {
