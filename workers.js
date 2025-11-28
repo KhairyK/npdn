@@ -7,33 +7,88 @@ export default {
       return new Response("Use: /npm/<pkg>@<ver>/<file>", { status: 400 });
     }
 
-    const clean = url.pathname.replace("/npm/", "");
+    const clean = url.pathname.replace("/npm/", "").replace(/^\/+|\/+$/g, "");
+    // pkgWithVer bisa berupa: "vue@3.3.4" atau "@scope/pkg@1.2.3"
     const [pkgWithVer, ...rest] = clean.split("/");
-    const [pkgName, pkgVer] = pkgWithVer.split("@");
-    const filePath = rest.join("/");
+    const atIndex = pkgWithVer.lastIndexOf("@");
+    if (atIndex <= 0) {
+      return new Response("Invalid package@version format", { status: 400 });
+    }
+    let pkgName = pkgWithVer.slice(0, atIndex);
+    let pkgVer = pkgWithVer.slice(atIndex + 1);
+    const filePath = rest.join("/"); // bisa kosong jika hanya ingin listing (tidak kita tangani sekarang)
 
     if (!pkgName || !pkgVer || !filePath) {
-      return new Response("Invalid format. Example: /npm/vue@3.3.4/dist/vue.esm.js", {
-        status: 400,
-      });
+      return new Response(
+        "Invalid format. Example: /npm/vue@3.3.4/dist/vue.esm.js",
+        { status: 400 }
+      );
     }
 
-    const KV_KEY = `${pkgName}@${pkgVer}/${filePath}`;
+    // apakah client minta integrity JSON? (mis: /npm/vue@3.3.4/dist/vue.esm.js?integrity)
+    const wantIntegrityJson = url.searchParams.has("integrity");
 
     // --------------------------------------------------
-    // 1) CEK CACHE DI KV
+    // 1) Resolve version (handle 'latest' atau dist-tag)
     // --------------------------------------------------
-    const cached = await env.NPM_CACHE.get(KV_KEY, "arrayBuffer");
-    if (cached) {
-      return makeFileResponse(new Uint8Array(cached), filePath, true);
+    // ambil metadata dari registry untuk memastikan versi & tarball url
+    const encodedPkg = encodeURIComponent(pkgName);
+    const registryUrl = `https://registry.npmjs.org/${encodedPkg}`;
+    let metadata;
+    try {
+      const metaRes = await fetch(registryUrl);
+      if (!metaRes.ok) {
+        return new Response("Package not found on registry", { status: 404 });
+      }
+      metadata = await metaRes.json();
+    } catch (err) {
+      return new Response("Failed to fetch registry metadata", { status: 502 });
+    }
+
+    // jika pkgVer adalah dist-tag (mis: latest, next) -> resolve ke version sebenarnya
+    const distTags = metadata["dist-tags"] || {};
+    let resolvedVersion = distTags[pkgVer] || pkgVer;
+
+    // safety: jika resolvedVersion tidak ada di metadata.versions, coba fallback: jika tag diberikan, ambil latest
+    if (!metadata.versions || !metadata.versions[resolvedVersion]) {
+      if (distTags.latest) resolvedVersion = distTags.latest;
+      if (!metadata.versions || !metadata.versions[resolvedVersion]) {
+        return new Response("Version not found", { status: 404 });
+      }
+    }
+
+    // gunakan tarball URL dari metadata (lebih andal, handle scoped packages)
+    const versionMeta = metadata.versions[resolvedVersion];
+    const tarballUrl = (versionMeta && versionMeta.dist && versionMeta.dist.tarball) ?
+                       versionMeta.dist.tarball :
+                       `https://registry.npmjs.org/${encodedPkg}/-/${encodeURIComponent(getPkgBase(pkgName))}-${resolvedVersion}.tgz`;
+
+    const KV_KEY = `${pkgName}@${resolvedVersion}/${filePath}`;
+
+    // --------------------------------------------------
+    // 2) CEK CACHE DI KV
+    // --------------------------------------------------
+    let cachedArrayBuffer = await env.NPM_CACHE.get(KV_KEY, "arrayBuffer");
+    if (cachedArrayBuffer) {
+      const cachedUint8 = new Uint8Array(cachedArrayBuffer);
+      if (wantIntegrityJson) {
+        const integrity = await computeSRI(cachedUint8.buffer);
+        const mime = mimeTypeForPath(filePath);
+        return jsonResponse({
+          url: request.url,
+          integrity,
+          size: cachedUint8.byteLength,
+          mime,
+          cached: true,
+        });
+      }
+      return makeFileResponse(cachedUint8, filePath, true);
     }
 
     // --------------------------------------------------
-    // 2) FETCH TARBALL DARI REGISTRY
+    // 3) FETCH TARBALL DARI REGISTRY
     // --------------------------------------------------
-    const tarURL = `https://registry.npmjs.org/${pkgName}/-/${pkgName}-${pkgVer}.tgz`;
-    const tarRes = await fetch(tarURL);
-
+    const tarRes = await fetch(tarballUrl);
     if (!tarRes.ok) {
       return new Response("Tarball not found on npm", { status: 404 });
     }
@@ -44,28 +99,58 @@ export default {
 
     // Extract file
     const files = untar(tarBytes);
-    const target = files.find(f => f.name.replace(/^package\//, "") === filePath);
+    const target = files.find(
+      (f) => f.name.replace(/^package\//, "") === filePath
+    );
 
     if (!target) {
       return new Response(`File not found in tarball: ${filePath}`, { status: 404 });
     }
 
     // --------------------------------------------------
-    // 3) SIMPAN FILE KE KV
+    // 4) SIMPAN FILE KE KV
     // --------------------------------------------------
+    // target.data adalah Uint8Array (dari untar)
     await env.NPM_CACHE.put(KV_KEY, target.data, {
       expirationTtl: 60 * 60 * 24 * 365, // 1 tahun
     });
 
     // --------------------------------------------------
-    // 4) KIRIM RESPONSE KE USER
+    // 5) jika client minta integrity -> hitung & return JSON
+    // --------------------------------------------------
+    if (wantIntegrityJson) {
+      const integrity = await computeSRI(target.data.buffer);
+      const mime = mimeTypeForPath(filePath);
+      return jsonResponse({
+        url: request.url,
+        integrity,
+        size: target.data.byteLength,
+        mime,
+        cached: false,
+      });
+    }
+
+    // --------------------------------------------------
+    // 6) KIRIM FILE KE USER
     // --------------------------------------------------
     return makeFileResponse(target.data, filePath, false);
   },
 };
 
+/* -------------------------
+   Helpers: package base
+--------------------------*/
+function getPkgBase(pkgName) {
+  // '@scope/pkg' -> 'pkg', 'foo' -> 'foo'
+  if (pkgName.startsWith("@")) {
+    const parts = pkgName.split("/");
+    return parts[1] || pkgName.replace("@", "");
+  }
+  return pkgName;
+}
+
 /* ------------------------------------------------------
-   TAR PARSER
+   TAR PARSER (sama seperti milikmu)
 ------------------------------------------------------ */
 function untar(bytes) {
   const files = [];
@@ -120,21 +205,87 @@ async function streamToUint8Array(stream) {
 }
 
 /* ------------------------------------------------------
-   MIME + HEADERS
+   MIME detection (lebih lengkap)
+------------------------------------------------------ */
+function mimeTypeForPath(path) {
+  const ext = (path || "").split(".").pop().toLowerCase();
+  const map = {
+    js: "application/javascript",
+    mjs: "application/javascript",
+    cjs: "application/javascript",
+    map: "application/json",
+    json: "application/json",
+    css: "text/css",
+    html: "text/html",
+    htm: "text/html",
+    svg: "image/svg+xml",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    avif: "image/avif",
+    ico: "image/x-icon",
+    txt: "text/plain",
+    xml: "application/xml",
+    wasm: "application/wasm",
+    csv: "text/csv",
+    svgz: "image/svg+xml",
+    ttf: "font/ttf",
+    otf: "font/otf",
+    woff: "font/woff",
+    woff2: "font/woff2",
+    eot: "application/vnd.ms-fontobject",
+    mp3: "audio/mpeg",
+    mp4: "video/mp4",
+    wasm: "application/wasm",
+    // fallback handled below
+  };
+  return map[ext] || "application/octet-stream";
+}
+
+/* ------------------------------------------------------
+   SRI (sha512) helper -> returns 'sha512-<base64>'
+------------------------------------------------------ */
+async function computeSRI(arrayBuffer) {
+  const hashBuffer = await crypto.subtle.digest("SHA-512", arrayBuffer);
+  const b64 = arrayBufferToBase64(hashBuffer);
+  return `sha512-${b64}`;
+}
+
+function arrayBufferToBase64(buffer) {
+  // browser-friendly base64 conversion
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  // btoa is available in Workers
+  return btoa(binary);
+}
+
+/* ------------------------------------------------------
+   MIME + HEADERS -> RESPONSE
 ------------------------------------------------------ */
 function makeFileResponse(data, path, cached) {
   const h = new Headers();
   h.set("Access-Control-Allow-Origin", "*");
 
-  // MIME detection
-  if (path.endsWith(".js") || path.endsWith(".mjs")) h.set("Content-Type", "application/javascript");
-  else if (path.endsWith(".css")) h.set("Content-Type", "text/css");
-  else if (path.endsWith(".json")) h.set("Content-Type", "application/json");
-  else if (path.endsWith(".map")) h.set("Content-Type", "application/json");
-  else h.set("Content-Type", "application/octet-stream");
+  const mime = mimeTypeForPath(path);
+  h.set("Content-Type", mime);
 
   h.set("Cache-Control", "public, max-age=31536000, immutable");
   h.set("X-Cache", cached ? "HIT" : "MISS");
 
-  return new Response(data, { status: 200, headers: h });
+  // data can be Uint8Array or ArrayBuffer
+  const body = data instanceof Uint8Array ? data : new Uint8Array(data);
+  return new Response(body, { status: 200, headers: h });
 }
+
+function jsonResponse(obj) {
+  const h = new Headers();
+  h.set("Content-Type", "application/json");
+  h.set("Access-Control-Allow-Origin", "*");
+  return new Response(JSON.stringify(obj), { status: 200, headers: h });
+          }
