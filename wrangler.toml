@@ -1,4 +1,4 @@
-name = "npm-cdn-worker"
+name = "oauth"
 compatibility_date = "2025-11-18"
 main = "workers.js"
 type = "esm"
