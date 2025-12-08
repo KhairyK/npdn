@@ -1,8 +1,6 @@
-name = "npm-cdn-worker"
+name = "npdn"
 compatibility_date = "2025-11-18"
 main = "workers.js"
-type = "esm"
-
 kv_namespaces = [
   { binding = "NPM_CACHE", id = "9a7e02d421354c6baa94800ece1e4eeb" }
 ]
