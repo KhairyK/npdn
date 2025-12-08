@@ -1,4 +1,4 @@
-name = "npdn"
+name = "npmcdn"
 compatibility_date = "2025-11-18"
 main = "workers.js"
 kv_namespaces = [
