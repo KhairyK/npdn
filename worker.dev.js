@@ -665,35 +665,45 @@ async function makeFileResponse(request, data, path, cached = false, extraHeader
 
   for (const k in extraHeaders) h.set(k, extraHeaders[k]);
 
-  // range responses must be handled earlier; here we serve full file (may gzip)
-  // data is Uint8Array or ArrayBuffer
+  // ensure data is Uint8Array
   const bodyUint8 = data instanceof Uint8Array ? data : new Uint8Array(data);
 
-  // decide gzip eligibility: only for js/css/html/text types and not when client doesn't want
-  const accept = request.headers.get("Accept-Encoding") || "";
+  // decide gzip eligibility: only for js/css/html/text types and when client accepts gzip
+  const accept = (request.headers.get("Accept-Encoding") || "");
   const ext = (path || "").split(".").pop().toLowerCase();
   const compressibleExts = new Set(["js", "mjs", "css", "html", "htm", "json", "xml", "txt"]);
-  const shouldGzip = false
-  /*
-  if (!shouldGzip) {
+  const clientAcceptsGzip = /\bgzip\b/.test(accept);
+
+  const shouldGzip = clientAcceptsGzip && compressibleExts.has(ext);
+
+  if (shouldGzip && typeof CompressionStream !== "undefined") {
+    // Stream gzip-compressed bytes to client
+    try {
+      const blob = new Blob([bodyUint8]); // Blob of raw bytes
+      const gzStream = blob.stream().pipeThrough(new CompressionStream("gzip"));
+
+      h.set("Content-Encoding", "gzip");
+      h.delete("Content-Length"); // streaming, unknown length
+      h.append("Vary", "Accept-Encoding");
+      h.set("X-CDN-Trace", trace.concat(["gzip"]).join(";"));
+
+      // Return the stream (binary gzip)
+      return new Response(gzStream, { status: 200, headers: h });
+    } catch (e) {
+      // Compression failed for some reason -> fallback to uncompressed
+      console.warn("Gzip stream failed, serving uncompressed:", e);
+      h.set("X-CDN-Trace", trace.concat(["gzip-failed"]).join(";"));
+      h.set("Content-Length", String(bodyUint8.byteLength));
+      return new Response(bodyUint8, { status: 200, headers: h });
+    }
+  } else {
+    // No gzip (either client doesn't accept it, ext not compressible, or CompressionStream not available)
+    if (shouldGzip && typeof CompressionStream === "undefined") {
+      // note: runtime doesn't support CompressionStream
+      trace.push("gzip-unavailable");
+    }
     h.set("Content-Length", String(bodyUint8.byteLength));
-    h.set("X-CDN-Trace", trace.concat(["serve-raw"]).join(";"));
-    return new Response(bodyUint8, { status: 200, headers: h });
-  }
-  */
-  // GZIP streaming
-  try {
-    const stream = new Blob([bodyUint8]).stream().pipeThrough(new CompressionStream("gzip"));
-    h.set("Content-Encoding", "gzip");
-    h.delete("Content-Length");
-    h.append("Vary", "Accept-Encoding");
-    h.set("X-CDN-Trace", trace.concat(["gzip"]).join(";"));
-    // do not set Content-Length (streamed)
-    return new Response(stream, { status: 200, headers: h });
-  } catch (e) {
-    // fallback to uncompressed
-    h.set("Content-Length", String(bodyUint8.byteLength));
-    h.set("X-CDN-Trace", trace.concat(["gzip-failed", "serve-raw"]).join(";"));
+    h.set("X-CDN-Trace", trace.join(";"));
     return new Response(bodyUint8, { status: 200, headers: h });
   }
 }
