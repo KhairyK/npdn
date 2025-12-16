@@ -1,6 +1,6 @@
 name = "npdn"
-compatibility_date = "2025-11-18"
-main = "workers.prod.js"
+compatibility_date = "2025-12-16"
+main = "worker.prod.js"
 kv_namespaces = [
   { binding = "NPM_CACHE", id = "9a7e02d421354c6baa94800ece1e4eeb" }
 ]
