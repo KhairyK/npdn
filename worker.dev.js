@@ -673,14 +673,14 @@ async function makeFileResponse(request, data, path, cached = false, extraHeader
   const accept = request.headers.get("Accept-Encoding") || "";
   const ext = (path || "").split(".").pop().toLowerCase();
   const compressibleExts = new Set(["js", "mjs", "css", "html", "htm", "json", "xml", "txt"]);
-  const shouldGzip = accept.includes("gzip") && compressibleExts.has(ext);
-
+  const shouldGzip = false
+  /*
   if (!shouldGzip) {
     h.set("Content-Length", String(bodyUint8.byteLength));
     h.set("X-CDN-Trace", trace.concat(["serve-raw"]).join(";"));
     return new Response(bodyUint8, { status: 200, headers: h });
   }
-
+  */
   // GZIP streaming
   try {
     const stream = new Blob([bodyUint8]).stream().pipeThrough(new CompressionStream("gzip"));
