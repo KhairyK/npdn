@@ -24,7 +24,9 @@ const PREWARM_PACKAGES = [
   "react@latest/jsx-runtime.js",
   "vue@latest/dist/vue.esm-browser.js",
   "lodash@latest/lodash.min.js",
-  "axios@latest/dist/axios.min.js"
+  "axios@latest/dist/axios.min.js", 
+  "bootstrap@latest/dist/css/bootstrap.min.css", 
+  "bootstrap@latest/dist/js/bootstrap.bundle.min.js"
 ];
 
 export default {
