@@ -23,7 +23,17 @@ export default {
     const wantIntegrityParam = url.searchParams.get("integrity"); // 'all' or presence
     const wantIntegrityJson = url.searchParams.has("integrity") && wantIntegrityParam !== "all";
     const wantIntegrityAll = url.searchParams.has("integrity") && wantIntegrityParam === "all";
-
+    
+    // DASHBOARD ROUTE
+    if (url.pathname === "/" || url.pathname === "/dashboard") {
+     return new Response(renderDashboardHTML(), {
+       headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+       },
+     });
+    }
+    
     // Basic route guard
     if (!url.pathname.startsWith("/npm/")) {
       return new Response("Use: /npm/<pkg>@<ver>/<file>", { status: 400 });
@@ -709,6 +719,89 @@ function mimeTypeForPath(path) {
     zs: "text/zoroonscript", 
   };
   return map[ext] || "application/octet-stream";
+}
+
+function renderDashboardHTML() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NPDN Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<style>
+body { background:#0b1020; color:#eaeaf0 }
+.card { background:#121a33; border:1px solid #1e2a55 }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace }
+.badge-hit { background:#22c55e }
+.badge-miss { background:#ef4444 }
+</style>
+</head>
+
+<body class="p-4">
+<div class="container">
+
+<h1 class="mb-4">⚡ NPDN Dashboard</h1>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4">
+    <div class="card p-3">
+      <h6>Test Package</h6>
+      <input id="pkg" class="form-control mono" value="react@latest">
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card p-3">
+      <h6>File</h6>
+      <input id="file" class="form-control mono" value="index.js">
+    </div>
+  </div>
+  <div class="col-md-4 d-grid">
+    <button class="btn btn-primary mt-auto" onclick="runCheck()">Fetch Meta</button>
+  </div>
+</div>
+
+<div id="result" class="card p-3 mono small"></div>
+
+</div>
+
+<script>
+async function runCheck() {
+  const pkg = document.getElementById("pkg").value;
+  const file = document.getElementById("file").value;
+  const url = \`/npm/\${pkg}/\${file}?meta=1&trace=1\`;
+
+  const res = await fetch(url, { method: "GET" });
+  const text = await res.text();
+
+  const headers = [...res.headers.entries()]
+    .filter(([k]) => k.startsWith("x-npdn") || k === "etag" || k === "x-cache");
+
+  document.getElementById("result").innerHTML = 
+    "<b>URL</b>\\n" + url +
+    "\\n\\n<b>Headers</b>\\n" +
+    headers.map(([k,v]) => k + ": " + v).join("\\n") +
+    "\\n\\n<b>Body</b>\\n" + text;
+}
+</script>
+
+</body>
+</html>`;
+}
+
+if (url.pathname === "/__dashboard/stats") {
+  return jsonResponse({
+    edge: "Cloudflare",
+    features: [
+      "Weak ETag",
+      "KV Cache",
+      "Edge Cache",
+      "Integrity Manifest",
+      "Range Request"
+    ]
+  });
 }
 
 /* ------------------------------------------------------
