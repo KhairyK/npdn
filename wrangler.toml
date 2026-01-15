@@ -4,3 +4,4 @@ main = "worker.dev.js"
 kv_namespaces = [
   { binding = "NPM_CACHE", id = "9a7e02d421354c6baa94800ece1e4eeb" }
 ]
+type = "module"
